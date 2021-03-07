@@ -1,5 +1,5 @@
 freebsd_test_task:
-  name: cargo test FreeBSD (stable)
+  name: cargo test FreeBSD (nightly)
   matrix:
     - freebsd_instance:
         image_family: freebsd-13-0-snap
@@ -8,6 +8,6 @@ freebsd_test_task:
   install_script: pkg install -y rust
   cargo_cache:
     folder: $HOME/.cargo/registry
-  build_script: cargo build --all
-  test_script: cargo test --all --all-targets
+  build_script: cargo +nightly build --all
+  test_script: cargo +nightly test --all --all-targets
   before_cache_script: rm -rf $HOME/.cargo/registry/index
