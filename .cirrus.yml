@@ -5,7 +5,7 @@ freebsd_test_task:
         image_family: freebsd-13-0-snap
   env:
     HOME: /tmp # cargo needs it
-  install_script: curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain nightly
+  install_script: pkg install postgresql13-client; curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain nightly
   cargo_cache:
     folder: $HOME/.cargo/registry
   build_script: . $HOME/.cargo/env; cargo build --all
