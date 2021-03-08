@@ -2,17 +2,16 @@ use uuid::Uuid;
 use juniper::{
     GraphQLObject, GraphQLInputObject, FieldResult
 };
-use crate::adapters::database::TenantRepository;
-use crate::adapters::database::tenant::{DieselTenantRepository, NewTenant};
+use crate::adapters::database::tenant::{NewTenant, TenantRepository};
 
-pub struct TenantService<T1: TenantRepository> {
-    tenant_repository: T1
+pub struct TenantService {
+    tenant_repository: TenantRepository
 }
 
-impl TenantService<DieselTenantRepository> {
-    pub fn new(database_url: &str) -> TenantService<DieselTenantRepository> {
+impl TenantService {
+    pub fn new(database_url: &str) -> TenantService {
         TenantService  {
-            tenant_repository: DieselTenantRepository::new(database_url),
+            tenant_repository: TenantRepository::new(database_url),
         }
     }
 

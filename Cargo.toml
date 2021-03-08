@@ -45,6 +45,8 @@ uuid = { version = "0.8", features = ["v4"] }
 log = "0.4"
 fern = "0.5"
 chrono = "0.4.19"
+pwhash = "1.0.0"
+rand = "0.8.3"
 
 [features]
 default = ["nightly"]

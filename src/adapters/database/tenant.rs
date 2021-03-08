@@ -1,17 +1,16 @@
 use diesel::prelude::*;
 use diesel::pg::PgConnection;
 use diesel::r2d2::{ConnectionManager, Pool};
-use crate::adapters::database::TenantRepository;
 use crate::services::tenant::Tenant;
 use crate::adapters::database::schema::tenants;
 use juniper::FieldResult;
 
-pub struct DieselTenantRepository {
+pub struct TenantRepository {
     pool: Pool<ConnectionManager<PgConnection>>
 }
 
-impl TenantRepository for DieselTenantRepository {
-    fn get_tenant(&self, name: &str) -> FieldResult<Tenant> {
+impl TenantRepository {
+    pub fn get_tenant(&self, name: &str) -> FieldResult<Tenant> {
         let tenant = tenants::table
             .filter(tenants::name.eq(name))
             .limit(1)
@@ -19,7 +18,7 @@ impl TenantRepository for DieselTenantRepository {
         Ok(tenant)
     }
 
-    fn tenants(&self, limit: usize, offset: usize) -> FieldResult<Vec<Tenant>> {
+    pub fn tenants(&self, limit: usize, offset: usize) -> FieldResult<Vec<Tenant>> {
         let results: Vec<Tenant>;
         if offset != 0 && limit != 0 {
             results = tenants::table
@@ -38,19 +37,17 @@ impl TenantRepository for DieselTenantRepository {
         Ok(results)
     }
 
-    fn add_tenant(&self, tenant: &NewTenant) -> FieldResult<Tenant> {
+    pub fn add_tenant(&self, tenant: &NewTenant) -> FieldResult<Tenant> {
         let results = diesel::insert_into(tenants::table)
             .values(tenant)
             .get_result(&self.pool.get()?)?;
         Ok(results)
     }
-}
 
-impl DieselTenantRepository {
-    pub fn new(database_url: &str) -> DieselTenantRepository {
+    pub fn new(database_url: &str) -> TenantRepository {
         let manager = ConnectionManager::<PgConnection>::new(database_url);
         let pool = Pool::builder().max_size(15).build(manager).unwrap();
-        DieselTenantRepository{
+        TenantRepository{
             pool
         }
     }
