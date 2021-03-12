@@ -34,6 +34,12 @@ edition = "2018"
 # https://github.com/HeroicKatora/oxide-auth/blob/master/oxide-auth-actix/examples/actix-example/src/main.rs
 # S3
 # https://crates.io/crates/rust-s3
+# Exmaples
+# https://github.com/clifinger/canduma/blob/master/src/jwt/model.rs
+# Error Library
+# https://github.com/dtolnay/anyhow
+# Inspiration
+# https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html
 
 [dependencies]
 juniper_rocket = "0.6.2"
@@ -43,7 +49,7 @@ diesel = { version = "1.4.6",  default-features=true, features = ["uuidv07", "r2
 dotenv = "0.15.0"
 uuid = { version = "0.8", features = ["v4"] }
 log = "0.4"
-fern = "0.5"
+fern = "0.6"
 chrono = "0.4.19"
 pwhash = "1.0.0"
 rand = "0.8.3"
