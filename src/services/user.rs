@@ -1,16 +1,30 @@
 use uuid::Uuid;
 use juniper::{GraphQLObject, GraphQLInputObject, FieldResult, FieldError, graphql_value};
-use crate::adapters::database::user::{UserRepository, NewUser, DBUser};
+use crate::adapters::database::user::{UserRepository, NewUser, DBUser, NewPermission};
 use pwhash::bcrypt;
+use std::option::Option::Some;
+use josekit::jws::JwsHeader;
+use josekit::jwt::JwtPayload;
+use josekit::{jwt, Value, Map, Number};
+use serde_json::json;
+use std::time::{Duration, SystemTime};
+use josekit::jws::alg::eddsa::EddsaJwsSigner;
+use diesel::PgConnection;
+use diesel::r2d2::{ConnectionManager, Pool};
 
+#[derive(Clone)]
 pub struct UserService {
-    user_repository: UserRepository
+    user_repository: Box<UserRepository>,
+    issuer_base: String,
+    signer: EddsaJwsSigner,
 }
 
 impl UserService {
-    pub fn new(database_url: &str) -> UserService {
+    pub fn new(pool: &Pool<ConnectionManager<PgConnection>>, issuer_base: String, signer: EddsaJwsSigner) -> Self {
         UserService {
-            user_repository: UserRepository::new(database_url),
+            user_repository: Box::new(UserRepository::new(pool)),
+            issuer_base,
+            signer,
         }
     }
 
@@ -51,6 +65,75 @@ impl UserService {
         //TODO send mail to user
         Ok(User::from(result.0))
     }
+
+    pub fn login(&self, input: LoginInput) -> FieldResult<TokenResponse> {
+        if let Some(email) = input.email {
+            self.login_db_user(self.user_repository.get_user_by_email(input.tenant, email)?, &input.password, input.remember)
+        } else if let Some(username) = input.username {
+            self.login_db_user(self.user_repository.get_user_by_name(input.tenant, username)?, &input.password, input.remember)
+        } else {
+            Err(FieldError::new(
+                "either username or email must be provided",
+                graphql_value!({ "bad_request": "not enough arguments" })
+            ))
+        }
+    }
+
+    pub fn get_permissions(&self, tenant: Uuid, user_id: Uuid) -> FieldResult<Vec<String>> {
+        self.user_repository.get_permissions(user_id, tenant)
+    }
+
+    pub fn grant_permission(&self, perm: &GrantPermissionInput) -> FieldResult<String>{
+        self.user_repository.grant_permission(&NewPermission{
+            user_id: &perm.user_id,
+            tenant_id: &perm.tenant_id,
+            permission: &perm.permission,
+        })
+    }
+
+    pub fn revoke_permission(&self, perm: &RevokePermissionInput) -> FieldResult<bool> {
+        self.user_repository.revoke_permission(&NewPermission{
+            user_id: &perm.user_id,
+            tenant_id: &perm.tenant_id,
+            permission: &perm.permission,
+        })
+    }
+
+    fn login_db_user(&self, user: DBUser, password: &str, remember: bool) -> FieldResult<TokenResponse> {
+        if !user.verify_pw(password) {
+            return Err(FieldError::new(
+                "Password not correct",
+                graphql_value!({ "bad_request": "wrong password" })
+            ));
+        }
+
+        let perms = self.user_repository.get_permissions(user.id, user.tenant_id)?;
+        let auth_token = {
+            let mut header = JwsHeader::new();
+            header.set_token_type("JWT");
+            header.set_algorithm("ED25519");
+            let payload = JwtPayload::from_map(AuthToken::new(&user, self.issuer_base.clone(), perms))?;
+            jwt::encode_with_signer(&payload, &header, &self.signer)?
+        };
+
+        let refresh_token = {
+            if remember {
+                let mut header = JwsHeader::new();
+                header.set_token_type("JWT");
+                header.set_algorithm("ED25519");
+                let payload = JwtPayload::from_map(RefreshToken::new(&user, self.issuer_base.clone()))?;
+                Some(jwt::encode_with_signer(&payload, &header, &self.signer)?)
+            } else {
+                None
+            }
+
+        };
+
+        Ok(TokenResponse{
+            auth_token,
+            refresh_token,
+        })
+    }
 }
 
 #[derive(GraphQLInputObject)]
@@ -70,6 +153,35 @@ pub struct User {
     pub email_confirmed: bool
 }
 
+#[derive(GraphQLInputObject)]
+pub struct LoginInput {
+    pub tenant: Uuid,
+    pub email: Option<String>,
+    pub username: Option<String>,
+    pub password: String,
+    pub remember: bool,
+}
+
+#[derive(GraphQLInputObject)]
+pub struct GrantPermissionInput {
+    pub tenant_id: Uuid,
+    pub user_id: Uuid,
+    pub permission: String,
+}
+
+#[derive(GraphQLInputObject)]
+pub struct RevokePermissionInput {
+    pub tenant_id: Uuid,
+    pub user_id: Uuid,
+    pub permission: String,
+}
+
+#[derive(GraphQLObject, Default, Clone)]
+pub struct TokenResponse {
+    pub auth_token: String,
+    pub refresh_token: Option<String>,
+}
+
 impl From<DBUser> for User {
     fn from(db_user: DBUser) -> Self {
         User{
@@ -79,5 +191,99 @@ impl From<DBUser> for User {
             email: db_user.email,
             email_confirmed: db_user.email_confirmed
         }
+    }
+}
+
+pub struct AuthToken {
+    // The URL for the API issueing the token plus tenant_id
+    issuer: String,
+
+    // UUID of the tennant
+    tennant_id: String,
+
+    // UUID of the user
+    subject: String,
+
+    // Array of permission strings
+    permissions: Vec<String>,
+}
+
+impl AuthToken{
+    fn new(db_user: &DBUser, issuer_base: String, permissions: Vec<String>) -> Self {
+        AuthToken{
+            issuer: issuer_base + "/" + db_user.tenant_id.to_string().as_str(),
+            subject: db_user.id.to_string(),
+            tennant_id: db_user.tenant_id.to_string(),
+            permissions,
+        }
+    }
+}
+
+impl Into<Map<String, Value>> for AuthToken {
+    fn into(self) -> Map<String, Value> {
+        let mut map = Map::new();
+        let issue_time = SystemTime::now();
+        if let Some(expiration) = issue_time.checked_add(Duration::from_secs(3600)) {
+            map.insert("exp".to_owned(), time_to_value(&expiration));
+        }
+        if let Some(not_before) = issue_time.checked_sub(Duration::from_secs(120)) {
+            map.insert("nbf".to_owned(), time_to_value(&not_before));
+        }
+        map.insert("iat".to_owned(), time_to_value(&issue_time));
+
+        map.insert("iss".to_owned(), json!(self.issuer));
+        map.insert("sub".to_owned(), json!(self.subject));
+        map.insert("perms".to_owned(), json!(self.permissions));
+        map.insert("tennant".to_owned(), json!(self.tennant_id));
+        map
+    }
+}
+
+pub struct RefreshToken {
+    // The URL for the API issueing the token plus tenant_id
+    issuer: String,
+
+    // UUID of the tennant
+    tennant_id: String,
+
+    // UUID of the user
+    subject: String,
+}
+
+fn time_to_value(value: &SystemTime) -> Value {
+    Value::Number(Number::from(
+        value
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    ))
+}
+
+impl RefreshToken{
+    fn new(db_user: &DBUser, issuer_base: String) -> Self {
+        RefreshToken{
+            issuer: issuer_base + "/" + db_user.tenant_id.to_string().as_str(),
+            subject: db_user.id.to_string(),
+            tennant_id: db_user.tenant_id.to_string(),
+        }
+    }
+}
+
+impl Into<Map<String, Value>> for RefreshToken {
+    fn into(self) -> Map<String, Value> {
+        let mut map = Map::new();
+        let issue_time = SystemTime::now();
+        if let Some(expiration) = issue_time.checked_add(Duration::from_secs(259200)) {
+            map.insert("exp".to_owned(), time_to_value(&expiration));
+        }
+        if let Some(not_before) = issue_time.checked_sub(Duration::from_secs(120)) {
+            map.insert("nbf".to_owned(), time_to_value(&not_before));
+        }
+        map.insert("iat".to_owned(), time_to_value(&issue_time));
+
+        map.insert("iss".to_owned(), json!(self.issuer));
+        map.insert("sub".to_owned(), json!(self.subject));
+        map.insert("tennant".to_owned(), json!(self.tennant_id));
+        map
     }
 }

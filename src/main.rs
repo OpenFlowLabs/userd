@@ -18,6 +18,11 @@ use juniper::{
 };
 use dotenv::dotenv;
 use std::env;
+use josekit::{jws::EdDSA};
+use diesel::r2d2::{ConnectionManager, Pool};
+use diesel::PgConnection;
+use crate::services::tenant::TenantService;
+use crate::services::user::UserService;
 
 fn setup_logger() -> Result<(), fern::InitError> {
     fern::Dispatch::new()
@@ -66,11 +71,37 @@ fn main() {
 
     let database_url = env::var("DATABASE_URL")
         .expect("DATABASE_URL must be set");
+
+    let (pub_key_path, priv_key_path) = {
+        let keys_path = env::var("KEY_DIRECTORY")
+            .unwrap_or(String::from(concat!(env!("CARGO_MANIFEST_DIR"), "/sample_data/keys")));
+        (
+            keys_path.clone() + "/ED25519_public.pem",
+            keys_path + "/ED25519_private.pem"
+        )
+    };
+
+    let issuer_base = env::var("ISSUER_BASE")
+        .expect("ISSUER_BASE must be set");
+
+    let private_key = std::fs::read(priv_key_path.clone()).expect(format!("could not find private_key for JWT in {}", &priv_key_path).as_str());
+    let public_key = std::fs::read(pub_key_path.clone()).expect(format!("could not find public_key for JWT in {}", &pub_key_path).as_str());
+    let signer = EdDSA.signer_from_pem(&private_key).expect(format!("cannot make signer from private_key is it PKCS#8 formatted?").as_str());
+
+    let manager = ConnectionManager::<PgConnection>::new(database_url);
+    let pool = Pool::builder().max_size(15).build(manager).unwrap();
+
+    let tenant_service = TenantService::new(&pool);
+    let user_service = UserService::new(&pool, issuer_base, signer);
+
+    let query_root = QueryRoot::new(tenant_service.clone(), user_service.clone(), public_key.clone());
+    let mutation_root = MutationRoot::new(tenant_service, user_service, public_key);
+
     rocket::ignite()
-        .manage(RootContext::new(&database_url))
+        .manage(RootContext{})
         .manage(Schema::new(
-            QueryRoot,
-            MutationRoot,
+            query_root,
+            mutation_root,
             EmptySubscription::<RootContext>::new(),
         ))
         .mount(

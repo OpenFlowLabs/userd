@@ -1,15 +1,19 @@
 use diesel::prelude::*;
 use diesel::pg::PgConnection;
 use diesel::r2d2::{ConnectionManager, Pool};
-use juniper::FieldResult;
+use juniper::{FieldResult, FieldError};
 use uuid::Uuid;
 use crate::adapters::database::schema::users;
 use crate::adapters::database::schema::user_confirmations;
 use rand::{thread_rng, Rng};
 use rand::distributions::Alphanumeric;
+use crate::adapters::database::schema::permissions;
+use juniper::graphql_value;
+use pwhash::bcrypt;
 
+#[derive(Clone)]
 pub struct UserRepository {
-    pool: Pool<ConnectionManager<PgConnection>>
+    pool: Box<Pool<ConnectionManager<PgConnection>>>
 }
 
 impl UserRepository {
@@ -49,6 +53,64 @@ impl UserRepository {
         Ok(results)
     }
 
+    pub fn get_permissions(&self, user_id: Uuid, tennant_id: Uuid) -> FieldResult<Vec<String>> {
+        let perms = permissions::table
+            .select(permissions::permission)
+            .filter(permissions::tenant_id.eq(tennant_id).and(permissions::user_id.eq(user_id)))
+            .load::<String>(&self.pool.get()?)?;
+        Ok(perms)
+    }
+
+    pub fn grant_permission(&self, new_perm: &NewPermission) -> FieldResult<String> {
+        if !self.has_permission(new_perm) {
+            let result: String = diesel::insert_into(permissions::table)
+                .values(new_perm)
+                .returning(permissions::permission)
+                .get_result(&self.pool.get()?)?;
+            Ok(result)
+        } else {
+            Err(FieldError::new(
+                "Permission already given to user",
+                graphql_value!({ "recoverable_error": "Permission already given" })))
+        }
+    }
+
+    pub fn revoke_permission(&self, new_perm: &NewPermission) -> FieldResult<bool> {
+        if self.has_permission(new_perm) {
+            let _: usize = diesel::delete(permissions::table
+                .filter(permissions::tenant_id.eq(new_perm.tenant_id)
+                    .and(permissions::user_id.eq(new_perm.user_id))
+                    .and(permissions::permission.eq(new_perm.permission))))
+                .execute(&self.pool.get()?)?;
+            Ok(true)
+        } else {
+            Err(FieldError::new(
+                "Permission not given to user",
+                graphql_value!({ "recoverable_error": "Permission not yet given" })))
+        }
+    }
+
+    fn has_permission(&self, new_perm: &NewPermission) -> bool {
+        if let Ok(conn) = &self.pool.get() {
+            let res = permissions::table
+                .select(permissions::permission)
+                .filter(permissions::tenant_id.eq(new_perm.tenant_id)
+                    .and(permissions::user_id.eq(new_perm.user_id))
+                    .and(permissions::permission.eq(new_perm.permission)))
+                .load::<String>(conn);
+            if let Ok(result) = res {
+                if result.len() > 0 {
+                    return true;
+                }
+                return false;
+            } else {
+                return false;
+            }
+        } else {
+            false
+        }
+    }
+
     pub fn add_user(&self, new_user: &NewUser) -> FieldResult<(DBUser, String)> {
         let result: DBUser = diesel::insert_into(users::table)
             .values(new_user)
@@ -72,11 +134,9 @@ impl UserRepository {
         Ok((result, rand_string))
     }
 
-    pub fn new(database_url: &str) -> UserRepository {
-        let manager = ConnectionManager::<PgConnection>::new(database_url);
-        let pool = Pool::builder().max_size(15).build(manager).unwrap();
+    pub fn new(pool: &Pool<ConnectionManager<PgConnection>>) -> Self {
         UserRepository{
-            pool
+            pool: Box::new(pool.clone())
         }
     }
 }
@@ -107,4 +167,18 @@ pub struct DBUser {
     pwhash: String,
     pub email: String,
     pub email_confirmed: bool
+}
+
+#[derive(Insertable)]
+#[table_name="permissions"]
+pub struct NewPermission<'a> {
+    pub user_id: &'a Uuid,
+    pub tenant_id: &'a Uuid,
+    pub permission: &'a String,
+}
+
+impl DBUser {
+    pub fn verify_pw(&self, pw_to_check: &str) -> bool {
+        bcrypt::verify(pw_to_check, &self.pwhash)
+    }
 }

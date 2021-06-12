@@ -3,15 +3,18 @@ use juniper::{
     GraphQLObject, GraphQLInputObject, FieldResult
 };
 use crate::adapters::database::tenant::{NewTenant, TenantRepository};
+use diesel::PgConnection;
+use diesel::r2d2::{ConnectionManager, Pool};
 
+#[derive(Clone)]
 pub struct TenantService {
-    tenant_repository: TenantRepository
+    tenant_repository: Box<TenantRepository>
 }
 
 impl TenantService {
-    pub fn new(database_url: &str) -> TenantService {
+    pub fn new(pool: &Pool<ConnectionManager<PgConnection>>) -> Self {
         TenantService  {
-            tenant_repository: TenantRepository::new(database_url),
+            tenant_repository: Box::new(TenantRepository::new(pool)),
         }
     }
 

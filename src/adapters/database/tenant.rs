@@ -5,8 +5,9 @@ use crate::services::tenant::Tenant;
 use crate::adapters::database::schema::tenants;
 use juniper::FieldResult;
 
+#[derive(Clone)]
 pub struct TenantRepository {
-    pool: Pool<ConnectionManager<PgConnection>>
+    pool: Box<Pool<ConnectionManager<PgConnection>>>
 }
 
 impl TenantRepository {
@@ -44,11 +45,9 @@ impl TenantRepository {
         Ok(results)
     }
 
-    pub fn new(database_url: &str) -> TenantRepository {
-        let manager = ConnectionManager::<PgConnection>::new(database_url);
-        let pool = Pool::builder().max_size(15).build(manager).unwrap();
+    pub fn new(pool: &Pool<ConnectionManager<PgConnection>>) -> Self {
         TenantRepository{
-            pool
+            pool: Box::new(pool.clone())
         }
     }
 }

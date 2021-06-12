@@ -42,9 +42,9 @@ edition = "2018"
 # https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies.html
 
 [dependencies]
-juniper_rocket = "0.6.2"
-juniper = "0.15.3"
-rocket = "0.4.7"
+juniper_rocket = "0.7.1"
+juniper = "0.15.6"
+rocket = "0.4.8"
 diesel = { version = "1.4.6",  default-features=true, features = ["uuidv07", "r2d2", "postgres"] }
 dotenv = "0.15.0"
 uuid = { version = "0.8", features = ["v4"] }
@@ -53,6 +53,8 @@ fern = "0.6"
 chrono = "0.4.19"
 pwhash = "1.0.0"
 rand = "0.8.3"
+josekit = "0.7.1"
+serde_json = "1.0.64"
 
 [features]
 default = ["nightly"]
